@@ -1,0 +1,5 @@
+# Among Us Mod Manager - Dependencies
+# tkinter is included with Python by default, no external dependencies required.
+# The following are optional but recommended:
+
+# No required external packages - runs on pure Python + tkinter!
