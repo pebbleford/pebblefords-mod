@@ -36,7 +36,6 @@ public class HackMenu : MonoBehaviour
     // Troll
     public static bool SpamChatEnabled, ForceColorEnabled;
     public static int ForceColorId = 0;
-    public static bool CrewmateSabotageEnabled;
 
     // Player
     public static bool GodModeEnabled, NoTasksEnabled, InfiniteEmergencyEnabled;
@@ -44,15 +43,24 @@ public class HackMenu : MonoBehaviour
     // Cosmetics
     public static bool UnlockAllCosmeticsEnabled;
 
+    // Doors
+    public static bool PinDoorsEnabled;
+    public static HashSet<SystemTypes> PinnedRooms = new HashSet<SystemTypes>();
+
+    // Meeting
+    public static bool SeeRolesInMeetingEnabled;
+
     // ── Internal State ──
     private Vector3 _freeCamPos;
     private bool _freeCamInit;
-    private float _killAuraTimer, _spamTimer, _autoKillTimer;
+    private float _killAuraTimer, _spamTimer, _autoKillTimer, _pinDoorTimer;
     private int _spamIndex;
     private Vector3 _frozenPosition;
     private bool _frozenPosSet;
     private float _defaultZoom = 3f;
     private bool _defaultZoomCaptured;
+    private float _defaultSpeed = 2.5f;
+    private bool _defaultSpeedCaptured;
     private static int _hatIdx, _skinIdx, _visorIdx, _petIdx;
 
     private static readonly string[] SpamMessages = {
@@ -79,8 +87,8 @@ public class HackMenu : MonoBehaviour
     {
         try
         {
-            // Capture default zoom once
-            if (!_defaultZoomCaptured && Camera.main != null)
+            // Capture default zoom once (only when in-game so we get the real value)
+            if (!_defaultZoomCaptured && Camera.main != null && ShipStatus.Instance != null)
             {
                 _defaultZoom = Camera.main.orthographicSize;
                 _defaultZoomCaptured = true;
@@ -101,8 +109,8 @@ public class HackMenu : MonoBehaviour
                     if (cam != null && PlayerControl.LocalPlayer != null)
                     {
                         var world = cam.ScreenToWorldPoint(UnityEngine.Input.mousePosition);
-                        PlayerControl.LocalPlayer.transform.position = new Vector3(world.x, world.y, PlayerControl.LocalPlayer.transform.position.z);
-                        PlayerControl.LocalPlayer.NetTransform.SnapTo(PlayerControl.LocalPlayer.transform.position);
+                        var pos = new Vector2(world.x, world.y);
+                        PlayerControl.LocalPlayer.NetTransform.RpcSnapTo(pos);
                     }
                 }
                 catch { }
@@ -167,10 +175,11 @@ public class HackMenu : MonoBehaviour
         switch (tab)
         {
             case 0: // Vision
-                toggle("ESP + Distance", () => EspEnabled, () => EspEnabled = !EspEnabled);
+                toggle("ESP + Distance + Cooldown", () => EspEnabled, () => EspEnabled = !EspEnabled);
                 toggle("See Roles (Imp = Red)", () => SeeRolesEnabled, () => SeeRolesEnabled = !SeeRolesEnabled);
+                toggle("See Roles in Meetings", () => SeeRolesInMeetingEnabled, () => SeeRolesInMeetingEnabled = !SeeRolesInMeetingEnabled);
                 toggle("Full Brightness", () => FullVisionEnabled, () => FullVisionEnabled = !FullVisionEnabled);
-                toggle("Free Camera (Arrows)", () => FreeCamEnabled, () => FreeCamEnabled = !FreeCamEnabled);
+                toggle("Free Camera (WASD/Arrows)", () => FreeCamEnabled, () => FreeCamEnabled = !FreeCamEnabled);
                 toggle("Zoom Out", () => ZoomOutHackEnabled, () => ZoomOutHackEnabled = !ZoomOutHackEnabled);
                 info($"Zoom Level: {ZoomOutHackLevel:F0}", () => $"Zoom: {ZoomOutHackLevel:F0}x  [click to cycle]",
                     () => ZoomOutHackLevel = ZoomOutHackLevel >= 12f ? 3f : ZoomOutHackLevel + 1f);
@@ -216,13 +225,13 @@ public class HackMenu : MonoBehaviour
                 break;
 
             case 3: // Troll
-                toggle("Crewmate Sabotage", () => CrewmateSabotageEnabled, () => CrewmateSabotageEnabled = !CrewmateSabotageEnabled);
-                action("Close All Doors", () => CloseDoors());
+                header("Sabotage");
                 action("Sabotage Lights", () => SabotageLights());
                 action("Sabotage Reactor", () => SabotageReactor());
                 action("Sabotage O2", () => SabotageO2());
                 action("Sabotage Comms", () => SabotageComms());
                 action("Fix All Sabotages", () => FixSabotages());
+                header("Other");
                 toggle("Chat Spam", () => SpamChatEnabled, () => SpamChatEnabled = !SpamChatEnabled);
                 action("Shapeshift to Nearest", () => ShapeshiftToNearest());
                 action("Vanish (Phantom)", () => DoVanish());
@@ -230,6 +239,33 @@ public class HackMenu : MonoBehaviour
                 toggle("Force Color", () => ForceColorEnabled, () => { ForceColorEnabled = !ForceColorEnabled; if (ForceColorEnabled) ApplyForceColor(); });
                 info($"Color: {GetColorName(ForceColorId)}", () => $"Color: {GetColorName(ForceColorId)}  [click next]",
                     () => { ForceColorId = (ForceColorId + 1) % 18; if (ForceColorEnabled) ApplyForceColor(); });
+                break;
+
+            case 9: // Doors
+                toggle("Pin ALL Doors (Keep Closed)", () => PinDoorsEnabled, () => PinDoorsEnabled = !PinDoorsEnabled);
+                action("Close ALL Doors", () => CloseAllDoors());
+                action("Open ALL Doors", () => OpenAllDoors());
+                header("Pin By Room (Keep Closed)");
+                foreach (var kv in DoorRooms)
+                {
+                    var r = kv.Key;
+                    string roomName = kv.Value;
+                    toggle($"Pin {roomName}", () => PinnedRooms.Contains(r), () => { if (PinnedRooms.Contains(r)) PinnedRooms.Remove(r); else { PinnedRooms.Add(r); try { ShipStatus.Instance?.RpcCloseDoorsOfType(r); } catch { } } });
+                }
+                header("Close By Room");
+                foreach (var kv in DoorRooms)
+                {
+                    var r = kv.Key;
+                    string roomName = kv.Value;
+                    action($"Close {roomName}", () => { try { ShipStatus.Instance?.RpcCloseDoorsOfType(r); } catch { } });
+                }
+                header("Open By Room");
+                foreach (var kv in DoorRooms)
+                {
+                    var r = kv.Key;
+                    string roomName = kv.Value;
+                    action($"Open {roomName}", () => OpenDoorsForRoom(r));
+                }
                 break;
 
             case 4: // Game
@@ -366,15 +402,24 @@ public class HackMenu : MonoBehaviour
         if (local.Data == null) return;
 
         try { if (local.Collider != null) local.Collider.enabled = !NoClipEnabled; } catch { }
-        try { if (SpeedHackEnabled && local.MyPhysics != null) local.MyPhysics.Speed = SpeedHackMultiplier; } catch { }
+        try
+        {
+            if (local.MyPhysics != null)
+            {
+                if (!_defaultSpeedCaptured) { _defaultSpeed = local.MyPhysics.Speed; _defaultSpeedCaptured = true; }
+                if (SpeedHackEnabled) local.MyPhysics.Speed = SpeedHackMultiplier;
+                else if (_defaultSpeedCaptured && local.MyPhysics.Speed > _defaultSpeed + 0.1f) local.MyPhysics.Speed = _defaultSpeed;
+            }
+        }
+        catch { }
 
         // Freeze
-        try { if (FreezePositionEnabled && _frozenPosSet) { local.transform.position = _frozenPosition; local.NetTransform.SnapTo(_frozenPosition); } } catch { }
+        try { if (FreezePositionEnabled && _frozenPosSet) { local.NetTransform.RpcSnapTo((Vector2)_frozenPosition); } } catch { }
 
         // Flip
         try { if (FlipEnabled && local.MyPhysics != null) local.MyPhysics.FlipX = !local.MyPhysics.FlipX; } catch { }
 
-        // Free Cam
+        // Free Cam - disable FollowerCamera so it doesn't override position
         try
         {
             if (FreeCamEnabled)
@@ -382,16 +427,31 @@ public class HackMenu : MonoBehaviour
                 var cam = Camera.main;
                 if (cam != null)
                 {
+                    var follower = cam.GetComponent<FollowerCamera>();
+                    if (follower != null) follower.enabled = false;
                     if (!_freeCamInit) { _freeCamPos = cam.transform.position; _freeCamInit = true; }
                     float s = 8f * Time.deltaTime;
                     if (UnityEngine.Input.GetKey(KeyCode.UpArrow)) _freeCamPos.y += s;
                     if (UnityEngine.Input.GetKey(KeyCode.DownArrow)) _freeCamPos.y -= s;
                     if (UnityEngine.Input.GetKey(KeyCode.LeftArrow)) _freeCamPos.x -= s;
                     if (UnityEngine.Input.GetKey(KeyCode.RightArrow)) _freeCamPos.x += s;
+                    if (UnityEngine.Input.GetKey(KeyCode.W)) _freeCamPos.y += s;
+                    if (UnityEngine.Input.GetKey(KeyCode.S)) _freeCamPos.y -= s;
+                    if (UnityEngine.Input.GetKey(KeyCode.A)) _freeCamPos.x -= s;
+                    if (UnityEngine.Input.GetKey(KeyCode.D)) _freeCamPos.x += s;
                     cam.transform.position = new Vector3(_freeCamPos.x, _freeCamPos.y, cam.transform.position.z);
                 }
             }
-            else _freeCamInit = false;
+            else if (_freeCamInit)
+            {
+                _freeCamInit = false;
+                var cam = Camera.main;
+                if (cam != null)
+                {
+                    var follower = cam.GetComponent<FollowerCamera>();
+                    if (follower != null) follower.enabled = true;
+                }
+            }
         }
         catch { }
 
@@ -405,6 +465,40 @@ public class HackMenu : MonoBehaviour
         }
         catch { }
 
+        // Vent as Crewmate - force vent button visible
+        if (VentAsCrewmateEnabled)
+        {
+            try
+            {
+                var hud = HudManager.Instance;
+                if (hud != null && hud.ImpostorVentButton != null)
+                {
+                    var ventBtn = hud.ImpostorVentButton.gameObject;
+                    if (ventBtn != null && !ventBtn.active) ventBtn.SetActive(true);
+                    hud.ImpostorVentButton.Show();
+                }
+            }
+            catch { }
+            // Also set CanVent on the role so the physics allow entering
+            try { if (local.Data?.Role != null) local.Data.Role.CanVent = true; } catch { }
+        }
+
+        // Zero Kill Cooldown - force every frame + reset button
+        if (ZeroCooldownEnabled)
+        {
+            try { local.killTimer = 0f; } catch { }
+            try
+            {
+                var kb = HudManager.Instance?.KillButton;
+                if (kb != null)
+                {
+                    kb.SetCoolDown(0f, 0.5f);
+                    kb.isCoolingDown = false;
+                }
+            }
+            catch { }
+        }
+
         // Infinite Kill Range
         try { if (InfiniteKillRangeEnabled) local.MaxReportDistance = 9999f; } catch { }
 
@@ -414,8 +508,8 @@ public class HackMenu : MonoBehaviour
         // God Mode
         try { if ((GodModeEnabled || AntiKillEnabled) && local.Data.IsDead) try { local.Revive(); } catch { } } catch { }
 
-        // No Tasks
-        if (NoTasksEnabled) try { foreach (var t in local.myTasks) if (t != null && !t.IsComplete) try { t.Complete(); } catch { } } catch { }
+        // No Tasks (server-sided)
+        if (NoTasksEnabled) try { for (int i = 0; i < local.myTasks.Count; i++) { var t = local.myTasks[i]; if (t != null && !t.IsComplete) try { local.RpcCompleteTask(t.Id); } catch { } } } catch { }
 
         // ESP / Roles / Names
         if (EspEnabled || SeeRolesEnabled || AlwaysShowNamesEnabled)
@@ -435,11 +529,16 @@ public class HackMenu : MonoBehaviour
                             nt.color = p.Data.IsDead ? new Color(0.5f, 0.5f, 0.5f, 0.7f) :
                                        p.Data.Role.IsImpostor ? Color.red : Color.green;
                         }
-                        if (EspEnabled && p != local)
+                        if (EspEnabled)
                         {
-                            float d = Vector2.Distance(local.GetTruePosition(), p.GetTruePosition());
+                            float d = p == local ? 0f : Vector2.Distance(local.GetTruePosition(), p.GetTruePosition());
                             string imp = p.Data.Role != null && p.Data.Role.IsImpostor ? " [IMP]" : "";
-                            nt.text = p.Data.PlayerName + imp + $" [{d:F1}m]";
+                            string cd = "";
+                            try { if (p.Data.Role != null && p.Data.Role.IsImpostor) { float t = p.killTimer; cd = $" CD:{t:F1}s"; } } catch { }
+                            if (p == local)
+                                nt.text = (p.Data.PlayerName ?? "") + imp + cd;
+                            else
+                                nt.text = (p.Data.PlayerName ?? "") + imp + cd + $" [{d:F1}m]";
                         }
                     }
                     catch { }
@@ -467,7 +566,7 @@ public class HackMenu : MonoBehaviour
             if (_killAuraTimer <= 0f)
             {
                 _killAuraTimer = 0.3f;
-                try { foreach (var p in PlayerControl.AllPlayerControls) { if (p == null || p == local || p.Data == null || p.Data.IsDead) continue; if (Vector2.Distance(local.GetTruePosition(), p.GetTruePosition()) <= KillAuraRange) { try { local.CmdCheckMurder(p); } catch { } break; } } } catch { }
+                try { foreach (var p in PlayerControl.AllPlayerControls) { if (p == null || p == local || p.Data == null || p.Data.IsDead) continue; if (Vector2.Distance(local.GetTruePosition(), p.GetTruePosition()) <= KillAuraRange) { try { local.RpcMurderPlayer(p, true); } catch { } break; } } } catch { }
             }
         }
 
@@ -478,13 +577,53 @@ public class HackMenu : MonoBehaviour
             if (_autoKillTimer <= 0f)
             {
                 _autoKillTimer = 0.5f;
-                try { foreach (var p in PlayerControl.AllPlayerControls) { if (p == null || p == local || p.Data == null || p.Data.IsDead) continue; if (p.Data.Role?.IsImpostor == true && Vector2.Distance(local.GetTruePosition(), p.GetTruePosition()) < 3f) { try { local.CmdCheckMurder(p); } catch { } break; } } } catch { }
+                try { foreach (var p in PlayerControl.AllPlayerControls) { if (p == null || p == local || p.Data == null || p.Data.IsDead) continue; if (p.Data.Role?.IsImpostor == true && Vector2.Distance(local.GetTruePosition(), p.GetTruePosition()) < 3f) { try { local.RpcMurderPlayer(p, true); } catch { } break; } } } catch { }
             }
         }
 
         // Auto Report
         if (AutoReportEnabled && ShipStatus.Instance != null)
             try { foreach (var b in UnityEngine.Object.FindObjectsOfType<DeadBody>()) { if (b == null) continue; if (Vector2.Distance(local.GetTruePosition(), (Vector2)b.transform.position) < local.MaxReportDistance) { try { local.CmdReportDeadBody(GameData.Instance.GetPlayerById(b.ParentId)); } catch { } break; } } } catch { }
+
+        // Pin Doors - re-close pinned doors every 2 seconds
+        if ((PinDoorsEnabled || PinnedRooms.Count > 0) && ShipStatus.Instance != null)
+        {
+            _pinDoorTimer -= Time.deltaTime;
+            if (_pinDoorTimer <= 0f)
+            {
+                _pinDoorTimer = 2f;
+                if (PinDoorsEnabled)
+                    try { foreach (var kv in DoorRooms) try { ShipStatus.Instance.RpcCloseDoorsOfType(kv.Key); } catch { } } catch { }
+                else
+                    try { foreach (var room in PinnedRooms) try { ShipStatus.Instance.RpcCloseDoorsOfType(room); } catch { } } catch { }
+            }
+        }
+
+        // See Roles in Meeting
+        if (SeeRolesInMeetingEnabled)
+        {
+            try
+            {
+                var meeting = MeetingHud.Instance;
+                if (meeting != null && meeting.playerStates != null)
+                {
+                    foreach (var pva in meeting.playerStates)
+                    {
+                        if (pva == null || pva.NameText == null) continue;
+                        try
+                        {
+                            var playerInfo = GameData.Instance?.GetPlayerById(pva.TargetPlayerId);
+                            if (playerInfo == null || playerInfo.Role == null) continue;
+                            string roleName = playerInfo.Role.IsImpostor ? " <color=#ff0000>[IMP]</color>" : " <color=#00ff00>[CREW]</color>";
+                            string name = playerInfo.PlayerName ?? "???";
+                            pva.NameText.text = name + roleName;
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+        }
 
         // Chat Spam
         if (SpamChatEnabled)
@@ -502,37 +641,109 @@ public class HackMenu : MonoBehaviour
     //  ACTIONS
     // ══════════════════════════════════════
 
-    private static void KillNearest() { try { var n = GetNearest(); if (n != null) PlayerControl.LocalPlayer.CmdCheckMurder(n); } catch { } }
-    private static void KillAllPlayers() { try { foreach (var p in PlayerControl.AllPlayerControls) if (p != null && p != PlayerControl.LocalPlayer && p.Data != null && !p.Data.IsDead) try { PlayerControl.LocalPlayer.CmdCheckMurder(p); } catch { } } catch { } }
+    private static void KillNearest() { try { var n = GetNearest(); if (n != null) PlayerControl.LocalPlayer.RpcMurderPlayer(n, true); } catch { } }
+    private static void KillAllPlayers() { try { foreach (var p in PlayerControl.AllPlayerControls) if (p != null && p != PlayerControl.LocalPlayer && p.Data != null && !p.Data.IsDead) try { PlayerControl.LocalPlayer.RpcMurderPlayer(p, true); } catch { } } catch { } }
     private static void CallMeeting() { try { PlayerControl.LocalPlayer.CmdReportDeadBody(null); } catch { } }
 
     private static void TeleportToNearest() { try { var n = GetNearest(); if (n != null) TeleportToPlayer(n); } catch { } }
-    private static void TeleportToPlayer(PlayerControl t) { try { if (t != null) { PlayerControl.LocalPlayer.transform.position = t.transform.position; PlayerControl.LocalPlayer.NetTransform.SnapTo(t.transform.position); } } catch { } }
-    private static void TeleportToPos(Vector2 p) { try { var p3 = new Vector3(p.x, p.y, PlayerControl.LocalPlayer.transform.position.z); PlayerControl.LocalPlayer.transform.position = p3; PlayerControl.LocalPlayer.NetTransform.SnapTo(p3); } catch { } }
-    private static void TeleportToRandomVent() { try { var vents = UnityEngine.Object.FindObjectsOfType<Vent>(); if (vents.Length > 0) { var v = vents[UnityEngine.Random.Range(0, vents.Length)]; PlayerControl.LocalPlayer.transform.position = v.transform.position; PlayerControl.LocalPlayer.NetTransform.SnapTo(v.transform.position); } } catch { } }
+    private static void TeleportToPlayer(PlayerControl t) { try { if (t != null) PlayerControl.LocalPlayer.NetTransform.RpcSnapTo((Vector2)t.transform.position); } catch { } }
+    private static void TeleportToPos(Vector2 p) { try { PlayerControl.LocalPlayer.NetTransform.RpcSnapTo(p); } catch { } }
+    private static void TeleportToRandomVent() { try { var vents = UnityEngine.Object.FindObjectsOfType<Vent>(); if (vents.Length > 0) { var v = vents[UnityEngine.Random.Range(0, vents.Length)]; PlayerControl.LocalPlayer.NetTransform.RpcSnapTo((Vector2)v.transform.position); } } catch { } }
 
-    private static void CompleteAllTasks() { try { foreach (var t in PlayerControl.LocalPlayer.myTasks) if (t != null && !t.IsComplete) try { t.Complete(); } catch { } } catch { } }
+    private static void CompleteAllTasks()
+    {
+        try
+        {
+            var local = PlayerControl.LocalPlayer;
+            for (int i = 0; i < local.myTasks.Count; i++)
+            {
+                var t = local.myTasks[i];
+                if (t != null && !t.IsComplete)
+                {
+                    try { t.Complete(); } catch { }
+                    try { local.RpcCompleteTask(t.Id); } catch { }
+                }
+            }
+        }
+        catch { }
+    }
     private static void ReviveSelf() { try { PlayerControl.LocalPlayer.Revive(); } catch { } }
-    private static void ShapeshiftToNearest() { try { var n = GetNearest(); if (n != null) PlayerControl.LocalPlayer.CmdCheckShapeshift(n, true); } catch { } }
+    private static void ShapeshiftToNearest() { try { var n = GetNearest(); if (n != null) PlayerControl.LocalPlayer.RpcShapeshift(n, true); } catch { } }
     private static void DoVanish() { try { PlayerControl.LocalPlayer.CmdCheckVanish(9999f); } catch { } }
-    private static void SetScanner() { try { PlayerControl.LocalPlayer.SetScanner(true, 1); } catch { } }
+    private static void SetScanner() { try { PlayerControl.LocalPlayer.RpcSetScanner(true); } catch { } }
 
-    // Sabotage - uses RPC methods to bypass impostor check
-    private static void CloseDoors()
+    // Door rooms list (all maps)
+    private static readonly KeyValuePair<SystemTypes, string>[] DoorRooms = {
+        new(SystemTypes.Cafeteria, "Cafeteria"),
+        new(SystemTypes.MedBay, "MedBay"),
+        new(SystemTypes.Security, "Security"),
+        new(SystemTypes.Electrical, "Electrical"),
+        new(SystemTypes.Storage, "Storage"),
+        new(SystemTypes.Reactor, "Reactor"),
+        new(SystemTypes.UpperEngine, "Upper Engine"),
+        new(SystemTypes.LowerEngine, "Lower Engine"),
+        new(SystemTypes.LifeSupp, "O2"),
+        new(SystemTypes.Nav, "Navigation"),
+        new(SystemTypes.Comms, "Comms"),
+        new(SystemTypes.Admin, "Admin"),
+        new(SystemTypes.Weapons, "Weapons"),
+        new(SystemTypes.Shields, "Shields"),
+        new(SystemTypes.Decontamination, "Decontamination"),
+        new(SystemTypes.Decontamination2, "Decontamination 2"),
+        new(SystemTypes.Laboratory, "Laboratory"),
+        new(SystemTypes.Launchpad, "Launchpad"),
+        new(SystemTypes.Office, "Office"),
+    };
+
+    // Doors - uses RPC to sync to all players
+    private static void CloseAllDoors()
     {
         try
         {
             if (ShipStatus.Instance == null) return;
-            foreach (var r in new[] { SystemTypes.Electrical, SystemTypes.Reactor, SystemTypes.LifeSupp, SystemTypes.Comms,
-                                       SystemTypes.Storage, SystemTypes.Cafeteria, SystemTypes.MedBay, SystemTypes.Security, SystemTypes.Nav })
+            foreach (var kv in DoorRooms)
+                try { ShipStatus.Instance.RpcCloseDoorsOfType(kv.Key); } catch { }
+        }
+        catch { }
+    }
+
+    private static void OpenAllDoors()
+    {
+        try
+        {
+            if (ShipStatus.Instance == null) return;
+            // Open doors by repairing the door system for each door ID
+            if (ShipStatus.Instance.AllDoors != null)
+            {
+                foreach (var door in ShipStatus.Instance.AllDoors)
+                {
+                    if (door == null) continue;
+                    try
+                    {
+                        ShipStatus.Instance.RpcUpdateSystem(SystemTypes.Doors, (byte)door.Id);
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { }
+    }
+
+    private static void OpenDoorsForRoom(SystemTypes room)
+    {
+        try
+        {
+            if (ShipStatus.Instance?.AllDoors == null) return;
+            foreach (var door in ShipStatus.Instance.AllDoors)
+            {
+                if (door == null) continue;
                 try
                 {
-                    if (CrewmateSabotageEnabled)
-                        ShipStatus.Instance.RpcCloseDoorsOfType(r);
-                    else
-                        ShipStatus.Instance.CloseDoorsOfType(r);
+                    if (door.Room == room)
+                        ShipStatus.Instance.RpcUpdateSystem(SystemTypes.Doors, (byte)door.Id);
                 }
                 catch { }
+            }
         }
         catch { }
     }
@@ -542,15 +753,22 @@ public class HackMenu : MonoBehaviour
         try
         {
             if (ShipStatus.Instance == null) return;
-            if (CrewmateSabotageEnabled)
-                ShipStatus.Instance.RpcUpdateSystem(sys, 128);
-            else
-                ShipStatus.Instance.UpdateSystem(sys, PlayerControl.LocalPlayer, 128);
+            ShipStatus.Instance.RpcUpdateSystem(sys, 128);
         }
         catch { }
     }
 
-    private static void SabotageLights() => DoSabotage(SystemTypes.Electrical);
+    private static void SabotageLights()
+    {
+        try
+        {
+            if (ShipStatus.Instance == null) return;
+            // Flip all 5 light switches to sabotage (each switch = index | 128)
+            for (byte i = 0; i < 5; i++)
+                ShipStatus.Instance.RpcUpdateSystem(SystemTypes.Electrical, (byte)(i | 128));
+        }
+        catch { }
+    }
     private static void SabotageReactor() => DoSabotage(SystemTypes.Reactor);
     private static void SabotageO2() => DoSabotage(SystemTypes.LifeSupp);
     private static void SabotageComms() => DoSabotage(SystemTypes.Comms);
@@ -560,7 +778,21 @@ public class HackMenu : MonoBehaviour
         try { foreach (var s in new[] { SystemTypes.Electrical, SystemTypes.Reactor, SystemTypes.LifeSupp, SystemTypes.Comms }) { try { ShipStatus.Instance.RpcUpdateSystem(s, 16); ShipStatus.Instance.RpcUpdateSystem(s, 64); } catch { } } } catch { }
     }
 
-    private static void ForceEndGame() { try { foreach (var p in PlayerControl.AllPlayerControls) if (p?.myTasks != null) foreach (var t in p.myTasks) if (t != null && !t.IsComplete) try { t.Complete(); } catch { } } catch { } }
+    private static void ForceEndGame()
+    {
+        try
+        {
+            // Complete all of our own tasks via RPC to push task bar to completion
+            var local = PlayerControl.LocalPlayer;
+            for (int i = 0; i < local.myTasks.Count; i++)
+            {
+                var t = local.myTasks[i];
+                if (t != null && !t.IsComplete)
+                    try { local.RpcCompleteTask(t.Id); } catch { }
+            }
+        }
+        catch { }
+    }
 
     // Chat - FIXED: properly sends one message
     private static void SendChat(string msg)
@@ -595,9 +827,9 @@ public class HackMenu : MonoBehaviour
         catch { }
     }
 
-    private static void SetName(string n) { try { PlayerControl.LocalPlayer.SetName(n); } catch { } }
-    private static void ApplyForceColor() { try { PlayerControl.LocalPlayer.SetColor(ForceColorId); } catch { } }
-    private static void RandomizeColor() { try { PlayerControl.LocalPlayer.SetColor(UnityEngine.Random.Range(0, 18)); } catch { } }
+    private static void SetName(string n) { try { PlayerControl.LocalPlayer.RpcSetName(n); } catch { } }
+    private static void ApplyForceColor() { try { PlayerControl.LocalPlayer.RpcSetColor((byte)ForceColorId); } catch { } }
+    private static void RandomizeColor() { try { PlayerControl.LocalPlayer.RpcSetColor((byte)UnityEngine.Random.Range(0, 18)); } catch { } }
     private static string GetColorName(int id) => id >= 0 && id < ColorNames.Length ? ColorNames[id] : $"#{id}";
 
     // Cosmetics
@@ -651,6 +883,15 @@ public static class VentAsCrewmatePatch
     public static void Postfix(ref float __result, ref bool canUse, ref bool couldUse)
     {
         try { if (HackMenu.VentAsCrewmateEnabled && PlayerControl.LocalPlayer != null) { canUse = true; couldUse = true; __result = 0f; } } catch { }
+    }
+}
+
+[HarmonyPatch(typeof(RoleBehaviour), nameof(RoleBehaviour.CanVent), MethodType.Getter)]
+public static class RoleCanVentPatch
+{
+    public static void Postfix(ref bool __result)
+    {
+        try { if (HackMenu.VentAsCrewmateEnabled) __result = true; } catch { }
     }
 }
 

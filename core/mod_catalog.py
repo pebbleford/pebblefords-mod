@@ -96,7 +96,7 @@ DEFAULT_CATALOG = [
         "name": "Pebbleford's Mod",
         "author": "Pebbleford",
         "description": "Custom mod with Sheriff, Jester, Mayor, Seer roles + hack menu (ESP, No Clip, Speed Hack, Kill Aura, Teleport, Sabotage, and more). Press INSERT in-game to open hack menu.",
-        "github": "",
+        "github": "pebbleford/pebblefords-mod",
         "category": "Custom",
         "tags": ["roles", "hacks", "custom", "compatible", "built-in"],
         "dependencies": [],
@@ -187,13 +187,17 @@ class ModCatalog:
             try:
                 with open(CATALOG_CACHE_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # Merge default fields into cached entries (picks up new fields like dependencies)
+                # Merge default fields into cached entries (picks up new fields and updates structural fields)
+                # Structural fields: always take non-empty default over empty cached value
+                STRUCTURAL_KEYS = {"github", "category", "tags", "dependencies", "local_dll", "description"}
                 cached_ids = set()
                 for entry in data:
                     cached_ids.add(entry.get("id", ""))
                     default = defaults_by_id.get(entry.get("id", ""), {})
                     for key, value in default.items():
                         if key not in entry:
+                            entry[key] = value
+                        elif key in STRUCTURAL_KEYS and value and not entry[key]:
                             entry[key] = value
                 # Add any new default entries not in cache
                 for default_entry in DEFAULT_CATALOG:
@@ -409,8 +413,11 @@ class ModCatalog:
                 # From mod id: "theother-roles" → "theotherroles"
                 candidates.add(mod.id.lower().replace("-", "").replace("_", ""))
 
-                # From author: sometimes the DLL has the author name
-                # (skip this, too many false positives)
+                # From local_dll: "custom_mod/bin/.../CustomMod.dll" → "custommod"
+                if mod.local_dll:
+                    dll_stem = Path(mod.local_dll).stem.lower()
+                    candidates.add(dll_stem)
+                    candidates.add(dll_stem.replace("-", "").replace("_", ""))
 
                 # Check if any found file matches any candidate
                 for found in found_files:

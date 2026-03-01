@@ -236,7 +236,7 @@ public class HackMenuUI
     private void BuildTabs(GameObject parent)
     {
         _tabBtns.Clear();
-        string[] names = { "Vision", "Move", "Combat", "Troll", "Game", "Player", "Teleport", "Chat", "Cosmetics" };
+        string[] names = { "Vision", "Move", "Combat", "Troll", "Game", "Player", "Teleport", "Chat", "Cosmetics", "Doors" };
         int perRow = 5;
         float tabW = (WIN_W - 4f) / perRow;
 

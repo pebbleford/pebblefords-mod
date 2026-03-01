@@ -3,12 +3,14 @@ Among Us Mod Manager — Modern GUI using customtkinter.
 Styled after the original MatuxGG Mod Manager.
 """
 
+import json
 import os
 import subprocess
 import threading
 import webbrowser
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+from urllib import request as urlrequest
 
 from core.config import Settings, APP_NAME, APP_VERSION
 from core.path_detector import detect_among_us_path, validate_among_us_path
@@ -917,6 +919,94 @@ class App(ctk.CTk):
             self._refresh_catalog()
         else:
             self._render()
+        # Check for mod updates in background
+        threading.Thread(target=self._check_auto_update, daemon=True).start()
+
+    def _check_auto_update(self):
+        """Check GitHub for newer versions of installed mods with github repos."""
+        import shutil
+        for mod in self.catalog.get_mods():
+            if not mod.github or not mod.installed:
+                continue
+            try:
+                owner, repo = mod.github.split("/")
+                url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+                req = urlrequest.Request(url, headers={
+                    "User-Agent": "AmongUsModManager/1.0",
+                    "Accept": "application/vnd.github.v3+json",
+                })
+                with urlrequest.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode())
+
+                latest_tag = data.get("tag_name", "")
+                if not latest_tag:
+                    continue
+
+                # Compare with installed version
+                if mod.installed_version and latest_tag == mod.installed_version:
+                    continue
+
+                # Find the DLL asset
+                dll_url = None
+                for asset in data.get("assets", []):
+                    name = asset["name"].lower()
+                    if name.endswith(".dll"):
+                        dll_url = asset["browser_download_url"]
+                        break
+
+                if not dll_url:
+                    continue
+
+                # There's an update available - ask user
+                self.after(0, lambda m=mod, tag=latest_tag, durl=dll_url:
+                    self._prompt_update(m, tag, durl))
+
+            except Exception:
+                pass
+
+    def _prompt_update(self, mod, new_version, dll_url):
+        """Show update prompt and auto-download if user agrees."""
+        if messagebox.askyesno("Update Available",
+                f"{mod.name} has an update!\n\n"
+                f"Installed: {mod.installed_version}\n"
+                f"Latest: {new_version}\n\n"
+                f"Download and install the update?"):
+            self._busy = True
+            def do():
+                try:
+                    self._status(f"Downloading {mod.name} {new_version}...")
+                    self._prog(0.3)
+
+                    # Download the DLL
+                    req = urlrequest.Request(dll_url, headers={
+                        "User-Agent": "AmongUsModManager/1.0",
+                    })
+                    with urlrequest.urlopen(req, timeout=30) as resp:
+                        dll_data = resp.read()
+
+                    self._prog(0.7)
+
+                    # Install to plugins folder
+                    plugins_dir = os.path.join(
+                        self.settings.get("among_us_path", ""), "BepInEx", "plugins")
+                    os.makedirs(plugins_dir, exist_ok=True)
+                    dll_name = dll_url.split("/")[-1]
+                    dest = os.path.join(plugins_dir, dll_name)
+                    with open(dest, "wb") as f:
+                        f.write(dll_data)
+
+                    self.catalog.mark_installed(mod.id, new_version)
+                    mod.version = new_version
+                    self._status(f"Updated {mod.name} to {new_version}!")
+                    self._prog(1.0)
+                    self.after(300, self._render)
+                    self.after(2000, lambda: self._prog(0))
+                except Exception as e:
+                    self._status(f"Update failed: {e}")
+                finally:
+                    self._busy = False
+
+            threading.Thread(target=do, daemon=True).start()
 
     def _on_close(self):
         self.settings.set("window_width", self.winfo_width())
